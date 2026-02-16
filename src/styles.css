@@ -9,12 +9,6 @@ body {
   align-items: center;
 }
 
-h1 {
-  margin: 40px 0 20px;
-  font-size: 36px;
-  font-weight: 500;
-}
-
 .class-container {
   display: flex;
   gap: 20px;
@@ -404,12 +398,6 @@ video.show {
 }
 
 @media (max-width: 480px) {
-  h1 {
-    font-size: 1.5rem;
-    margin: 20px 0;
-    text-align: center;
-  }
-
   .btn {
     font-size: 0.75rem;
     padding: 6px;

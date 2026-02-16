@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 
 function ClassBox({
@@ -239,8 +239,6 @@ function ClassBox({
     closeOtherMenus();
   };
 
-  const classImages = useMemo(() => samples.slice(), [samples]);
-
   return (
     <div className="class-box">
       <div className="class-header">
@@ -332,7 +330,7 @@ function ClassBox({
             <img
               src={src}
               alt={`sample-${index + 1}`}
-              onClick={() => openModal(classImages, index)}
+              onClick={() => openModal(samples, index)}
             />
             <button className="remove-img-btn" onClick={() => removeSampleAt(index)}>
               X
@@ -407,7 +405,7 @@ export default function App() {
         <img src="/Images/Vision Snap logo.png" alt="Vision Snap Logo" className="logo" />
       </div>
 
-      <div className="class-container" id="classContainer">
+      <div className="class-container">
         {classes.map((classItem) => (
           <ClassBox
             key={classItem.id}
@@ -436,7 +434,7 @@ export default function App() {
         <div className="nav-btn next-btn" onClick={showNext}>
           &#10095;
         </div>
-        <img id="modalImg" src={modalImages[modalIndex] || ""} alt="preview" />
+        <img src={modalImages[modalIndex] || ""} alt="preview" />
       </div>
     </>
   );

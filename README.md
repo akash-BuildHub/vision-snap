@@ -1,16 +1,16 @@
 # Vision Snap
 
-Vision Snap is a React + Vite web app to capture and manage image samples for ML workflows.
+Vision Snap is a React + Vite web app for capturing and organizing image samples for machine learning workflows.
 
 ## Features
 
-- Add, rename, and delete classes
-- Capture samples from webcam
+- Create, rename, and delete classes
+- Capture samples from a webcam
 - Upload image or video files
-- Hold-and-record frame capture
-- Remove single sample or all samples
+- Hold-to-record frame capture
+- Remove individual samples or clear all samples
 - Download class samples as `.zip`
-- Image lightbox with keyboard navigation
+- Preview images in a lightbox with keyboard navigation
 
 ## Tech Stack
 
@@ -30,15 +30,14 @@ Vision Snap is a React + Vite web app to capture and manage image samples for ML
 |   |-- main.jsx
 |   `-- styles.css
 |-- index.html
-|-- package.json
-`-- .gitignore
+`-- package.json
 ```
 
-## Local Development
+## Getting Started
 
 ```bash
 npm install
 npm run dev
 ```
 
-App runs by default at `http://localhost:5173`.
+The app runs at `http://localhost:5173` by default.

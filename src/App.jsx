@@ -1,5 +1,41 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
+
+const CAPTURE_INTERVAL_MS = 80;
+const UPLOAD_FRAME_STEP_SECONDS = 0.08;
+const MAX_CAPTURE_DIMENSION = 1024;
+const JPEG_QUALITY = 0.82;
+const SEEK_TIMEOUT_MS = 140;
+const SAMPLE_FLUSH_DELAY_MS = 160;
+const MAX_PENDING_SAMPLES = 4;
+
+const buildSampleId = () => (
+  typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+);
+
+const SampleThumb = memo(function SampleThumb({
+  sample,
+  index,
+  onOpen,
+  onRemove,
+}) {
+  return (
+    <div className="sample-item">
+      <img
+        src={sample.previewUrl}
+        alt={`sample-${index + 1}`}
+        loading="lazy"
+        decoding="async"
+        onClick={() => onOpen(index)}
+      />
+      <button className="remove-img-btn" onClick={() => onRemove(index)}>
+        X
+      </button>
+    </div>
+  );
+});
 
 function ClassBox({
   id,
@@ -20,10 +56,16 @@ function ClassBox({
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
-  const intervalRef = useRef(null);
+  const holdTimeoutRef = useRef(null);
+  const isHoldingRef = useRef(false);
+  const isCaptureBusyRef = useRef(false);
   const fileInputRef = useRef(null);
   const uploadedVideoUrlRef = useRef(null);
   const menuRef = useRef(null);
+  const captureCanvasRef = useRef(null);
+  const samplesRef = useRef([]);
+  const pendingSamplesRef = useRef([]);
+  const flushTimeoutRef = useRef(null);
 
   const hasImages = samples.length > 0;
   const isMenuOpen = activeMenuId === id;
@@ -44,12 +86,56 @@ function ClassBox({
       stopHolding();
       stopStream();
       revokeUploadedVideoUrl();
+      if (flushTimeoutRef.current) {
+        clearTimeout(flushTimeoutRef.current);
+        flushTimeoutRef.current = null;
+      }
+      pendingSamplesRef.current.forEach((sample) => URL.revokeObjectURL(sample.previewUrl));
+      samplesRef.current.forEach((sample) => URL.revokeObjectURL(sample.previewUrl));
       if (videoRef.current) {
         videoRef.current.pause();
         videoRef.current.src = "";
         videoRef.current.srcObject = null;
       }
     };
+  }, []);
+
+  useEffect(() => {
+    samplesRef.current = samples;
+  }, [samples]);
+
+  const flushPendingSamples = useCallback(() => {
+    if (flushTimeoutRef.current) {
+      clearTimeout(flushTimeoutRef.current);
+      flushTimeoutRef.current = null;
+    }
+
+    const pending = pendingSamplesRef.current;
+    if (pending.length === 0) return;
+
+    pendingSamplesRef.current = [];
+    setSamples((prev) => [...prev, ...pending]);
+  }, []);
+
+  const enqueueSample = useCallback((sample) => {
+    pendingSamplesRef.current.push(sample);
+
+    if (pendingSamplesRef.current.length >= MAX_PENDING_SAMPLES) {
+      flushPendingSamples();
+      return;
+    }
+
+    if (!flushTimeoutRef.current) {
+      flushTimeoutRef.current = setTimeout(() => {
+        flushPendingSamples();
+      }, SAMPLE_FLUSH_DELAY_MS);
+    }
+  }, [flushPendingSamples]);
+
+  const getAllSamples = useCallback(() => {
+    const pending = pendingSamplesRef.current;
+    if (pending.length === 0) return samplesRef.current;
+    return [...samplesRef.current, ...pending];
   }, []);
 
   const revokeUploadedVideoUrl = () => {
@@ -90,47 +176,116 @@ function ClassBox({
     video.addEventListener("loadedmetadata", onLoadedMetadata, { once: true });
   };
 
-  const captureImage = () => {
-    const video = videoRef.current;
-    if (!video || video.readyState < 2) return;
+  const getTargetCaptureSize = (video) => {
+    const sourceWidth = video.videoWidth || 640;
+    const sourceHeight = video.videoHeight || 480;
+    const maxSide = Math.max(sourceWidth, sourceHeight);
 
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
+    if (maxSide <= MAX_CAPTURE_DIMENSION) {
+      return { width: sourceWidth, height: sourceHeight };
+    }
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL("image/png");
-    setSamples((prev) => [...prev, dataUrl]);
+    const scale = MAX_CAPTURE_DIMENSION / maxSide;
+    return {
+      width: Math.max(1, Math.round(sourceWidth * scale)),
+      height: Math.max(1, Math.round(sourceHeight * scale)),
+    };
   };
+
+  const waitForSeek = (video, targetTime) => new Promise((resolve) => {
+    let resolved = false;
+    let timeoutId = null;
+
+    const finalize = () => {
+      if (resolved) return;
+      resolved = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      video.removeEventListener("seeked", onSeeked);
+      video.removeEventListener("error", onSeeked);
+      resolve();
+    };
+
+    const onSeeked = () => finalize();
+    timeoutId = setTimeout(finalize, SEEK_TIMEOUT_MS);
+    video.addEventListener("seeked", onSeeked, { once: true });
+    video.addEventListener("error", onSeeked, { once: true });
+    video.currentTime = targetTime;
+    setTimelineValue(targetTime);
+  });
+
+  const captureImage = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2 || isCaptureBusyRef.current) return;
+
+    isCaptureBusyRef.current = true;
+    try {
+      const canvas = captureCanvasRef.current || document.createElement("canvas");
+      captureCanvasRef.current = canvas;
+      const { width, height } = getTargetCaptureSize(video);
+      canvas.width = width;
+      canvas.height = height;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      ctx.drawImage(video, 0, 0, width, height);
+
+      const blob = await new Promise((resolve) => {
+        canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY);
+      });
+
+      if (blob) {
+        const previewUrl = URL.createObjectURL(blob);
+        const id = buildSampleId();
+        enqueueSample({ id, previewUrl, blob });
+      }
+    } finally {
+      isCaptureBusyRef.current = false;
+    }
+  }, [enqueueSample]);
 
   const startHolding = (event) => {
     if (event) event.preventDefault();
     stopHolding();
+    isHoldingRef.current = true;
 
-    intervalRef.current = setInterval(() => {
+    const runCaptureLoop = async () => {
+      if (!isHoldingRef.current) return;
+
+      const cycleStart = performance.now();
       const video = videoRef.current;
-      if (!video || video.readyState < 2) return;
+      if (!video || video.readyState < 2) {
+        holdTimeoutRef.current = setTimeout(runCaptureLoop, CAPTURE_INTERVAL_MS);
+        return;
+      }
 
-      captureImage();
+      await captureImage();
 
       if (!streamRef.current && showTimeline) {
-        const nextTime = Math.min((video.currentTime || 0) + 0.125, video.duration || 0);
-        video.currentTime = nextTime;
-        setTimelineValue(nextTime);
-        if (nextTime >= (video.duration || 0)) stopHolding();
+        const nextTime = Math.min((video.currentTime || 0) + UPLOAD_FRAME_STEP_SECONDS, video.duration || 0);
+        await waitForSeek(video, nextTime);
+        if (nextTime >= (video.duration || 0)) {
+          stopHolding();
+          return;
+        }
       }
-    }, 125);
+
+      const elapsed = performance.now() - cycleStart;
+      const delay = Math.max(0, CAPTURE_INTERVAL_MS - elapsed);
+      holdTimeoutRef.current = setTimeout(runCaptureLoop, delay);
+    };
+
+    runCaptureLoop();
   };
 
   const stopHolding = (event) => {
     if (event) event.preventDefault();
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
+    isHoldingRef.current = false;
+    if (holdTimeoutRef.current) {
+      clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
     }
+    flushPendingSamples();
   };
 
   const handleWebcam = async () => {
@@ -171,13 +326,9 @@ function ClassBox({
     if (!file) return;
 
     if (file.type.startsWith("image/")) {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        if (ev.target && typeof ev.target.result === "string") {
-          setSamples((prev) => [...prev, ev.target.result]);
-        }
-      };
-      reader.readAsDataURL(file);
+      const previewUrl = URL.createObjectURL(file);
+      const id = buildSampleId();
+      enqueueSample({ id, previewUrl, blob: file });
       return;
     }
 
@@ -207,24 +358,33 @@ function ClassBox({
   };
 
   const removeSampleAt = (index) => {
-    setSamples((prev) => prev.filter((_, i) => i !== index));
+    flushPendingSamples();
+    setSamples((prev) => {
+      const target = prev[index];
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((_, i) => i !== index);
+    });
   };
 
   const removeAllSamples = () => {
     if (!hasImages) return;
-    setSamples([]);
+    flushPendingSamples();
+    setSamples((prev) => {
+      prev.forEach((sample) => URL.revokeObjectURL(sample.previewUrl));
+      return [];
+    });
     closeOtherMenus();
   };
 
   const downloadSamples = async () => {
     if (!hasImages) return;
+    flushPendingSamples();
 
     const zip = new JSZip();
     const cleanName = (name || "class").trim() || "class";
 
-    samples.forEach((src, i) => {
-      const base64Part = src.split(",")[1];
-      zip.file(`${cleanName}_${i + 1}.png`, base64Part, { base64: true });
+    getAllSamples().forEach((sample, i) => {
+      zip.file(`${cleanName}_${i + 1}.jpg`, sample.blob);
     });
 
     const content = await zip.generateAsync({ type: "blob" });
@@ -238,6 +398,15 @@ function ClassBox({
     URL.revokeObjectURL(url);
     closeOtherMenus();
   };
+
+  const samplePreviewUrls = useMemo(
+    () => samples.map((item) => item.previewUrl),
+    [samples]
+  );
+
+  const handleOpenSample = useCallback((index) => {
+    openModal(samplePreviewUrls, index);
+  }, [openModal, samplePreviewUrls]);
 
   return (
     <div className="class-box">
@@ -294,7 +463,7 @@ function ClassBox({
       </div>
 
       <div className="video-container">
-        <video ref={videoRef} className={showVideo ? "show" : ""} playsInline />
+        <video ref={videoRef} className={showVideo ? "show" : ""} playsInline preload="metadata" />
 
         <input
           type="range"
@@ -325,17 +494,14 @@ function ClassBox({
       />
 
       <div className="samples-preview">
-        {samples.map((src, index) => (
-          <div className="sample-item" key={`${src}-${index}`}>
-            <img
-              src={src}
-              alt={`sample-${index + 1}`}
-              onClick={() => openModal(samples, index)}
-            />
-            <button className="remove-img-btn" onClick={() => removeSampleAt(index)}>
-              X
-            </button>
-          </div>
+        {samples.map((sample, index) => (
+          <SampleThumb
+            key={sample.id}
+            sample={sample}
+            index={index}
+            onOpen={handleOpenSample}
+            onRemove={removeSampleAt}
+          />
         ))}
       </div>
     </div>

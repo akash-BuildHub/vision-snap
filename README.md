@@ -10,7 +10,7 @@ Vision Snap is a React + Vite web app for capturing and organizing image samples
 - Hold-to-record frame capture
 - Remove individual samples or clear all samples
 - Download class samples as `.zip`
-- Preview images in a lightbox with keyboard navigation
+- Preview images in a modal viewer with keyboard navigation
 
 ## Tech Stack
 

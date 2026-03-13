@@ -183,6 +183,10 @@ video.show {
   display: block;
 }
 
+video.mirror-view {
+  transform: scaleX(-1);
+}
+
 .video-timeline {
   width: 100%;
   margin-top: 8px;

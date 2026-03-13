@@ -49,6 +49,7 @@ function ClassBox({
   const [name, setName] = useState(initialName);
   const [samples, setSamples] = useState([]);
   const [showVideo, setShowVideo] = useState(false);
+  const [isWebcamActive, setIsWebcamActive] = useState(false);
   const [showHoldRow, setShowHoldRow] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
   const [timelineValue, setTimelineValue] = useState(0);
@@ -162,6 +163,7 @@ function ClassBox({
     video.srcObject = null;
     video.src = url;
 
+    setIsWebcamActive(false);
     setShowVideo(true);
     setShowHoldRow(true);
     setShowTimeline(true);
@@ -304,6 +306,7 @@ function ClassBox({
       video.src = "";
       video.srcObject = stream;
 
+      setIsWebcamActive(true);
       setShowVideo(true);
       setShowHoldRow(true);
       setShowTimeline(false);
@@ -351,6 +354,7 @@ function ClassBox({
     }
 
     setShowVideo(false);
+    setIsWebcamActive(false);
     setShowHoldRow(false);
     setShowTimeline(false);
     setTimelineValue(0);
@@ -463,7 +467,12 @@ function ClassBox({
       </div>
 
       <div className="video-container">
-        <video ref={videoRef} className={showVideo ? "show" : ""} playsInline preload="metadata" />
+        <video
+          ref={videoRef}
+          className={`${showVideo ? "show" : ""} ${isWebcamActive ? "mirror-view" : ""}`.trim()}
+          playsInline
+          preload="metadata"
+        />
 
         <input
           type="range"
